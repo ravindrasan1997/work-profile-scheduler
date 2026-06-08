@@ -1,0 +1,20 @@
+# Build output
+.gradle/
+build/
+captures/
+
+# Local config (machine-specific; never commit)
+local.properties
+.claude/
+
+# IDE
+.idea/
+*.iml
+
+# OS / logs
+.DS_Store
+*.log
+emulator.log
+
+# Compiled APKs — distributed via GitHub Releases, not committed
+*.apk

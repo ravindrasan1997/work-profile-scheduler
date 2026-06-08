@@ -1,0 +1,13 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Windows batch + gradle wrapper script
+*.bat text eol=crlf
+gradlew text eol=lf
+
+# Binary files
+*.jar binary
+*.apk binary
+*.png binary
+*.jpg binary
+*.webp binary

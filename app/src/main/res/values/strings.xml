@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Work Profile Scheduler</string>
+    <string name="a11y_service_label">Work Profile Toggler</string>
+    <string name="a11y_service_description">Fallback only. Used to flip the Work apps tile when the silent MODIFY_QUIET_MODE permission has not been granted via ADB.</string>
+
+    <string name="notif_channel_name">Schedule events</string>
+    <string name="notif_channel_desc">Notifies when the scheduler fires.</string>
+</resources>
