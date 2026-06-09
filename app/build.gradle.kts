@@ -13,8 +13,8 @@ android {
         applicationId = "com.worksched"
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.5.1"
+        versionCode = 8
+        versionName = "1.6.0"
     }
 
     buildFeatures {
@@ -31,9 +31,23 @@ android {
         jvmTarget = "17"
     }
 
+    signingConfigs {
+        // Sign the release build with the standard Android debug key so the minified APK
+        // installs as an in-place update (same certificate as every prior build) without
+        // needing a separate release keystore.
+        create("debugKey") {
+            storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debugKey")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {

@@ -58,15 +58,20 @@ object QuietModeBackend {
         }
         return try {
             if (enable) {
-                // Resume = disable quiet mode. Use the credential-not-required flag so a
-                // locked device defers silently (returns false) instead of queuing a prompt.
-                val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Resume = disable quiet mode.
+                //  - Device UNLOCKED (e.g. a manual tap): use the plain 2-arg call so it resumes
+                //    immediately. The device credential is already in memory (unified lock), so no
+                //    PIN prompt appears.
+                //  - Device LOCKED (a scheduled resume firing while asleep): use the
+                //    credential-not-required flag so it does nothing & returns false instead of
+                //    queuing a PIN prompt; the caller defers and retries on unlock.
+                val locked = isDeviceLocked(context)
+                val ok = if (locked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     um.requestQuietModeEnabled(false, workUser, FLAG_DISABLE_ONLY_IF_CRED_NOT_REQUIRED)
                 } else {
                     um.requestQuietModeEnabled(false, workUser)
                 }
-                Log.i(TAG, "resume: requestQuietModeEnabled(quiet=false) returned $ok " +
-                    "(deviceLocked=${isDeviceLocked(context)})")
+                Log.i(TAG, "resume: requestQuietModeEnabled(quiet=false) returned $ok (locked=$locked)")
                 ok
             } else {
                 // Pause = enable quiet mode. Always succeeds, no credential.
