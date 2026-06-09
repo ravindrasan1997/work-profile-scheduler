@@ -367,11 +367,11 @@ private fun TimePill(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(4.dp))
-            Text("%02d:%02d".format(hour, minute), style = MaterialTheme.typography.headlineMedium)
+            Text(fmt12(hour, minute), style = MaterialTheme.typography.headlineMedium)
         }
     }
     if (show) {
-        val state = rememberTimePickerState(initialHour = hour, initialMinute = minute, is24Hour = true)
+        val state = rememberTimePickerState(initialHour = hour, initialMinute = minute, is24Hour = false)
         AlertDialog(
             onDismissRequest = { show = false },
             confirmButton = {
@@ -424,7 +424,7 @@ private fun formatNextRun(ms: Long): String {
     val mins = delta / 60_000L
     val hours = mins / 60
     val days = hours / 24
-    val absolute = SimpleDateFormat("EEE HH:mm", Locale.getDefault()).format(Date(ms))
+    val absolute = SimpleDateFormat("EEE h:mm a", Locale.ENGLISH).format(Date(ms))
     val rel = when {
         days >= 1 -> "in ${days}d ${hours % 24}h"
         hours >= 1 -> "in ${hours}h ${mins % 60}m"
@@ -432,6 +432,16 @@ private fun formatNextRun(ms: Long): String {
         else -> "in <1m"
     }
     return "$absolute ($rel)"
+}
+
+/** Always render a time as 12-hour with AM/PM (e.g. "7:30 PM"), regardless of device setting. */
+private fun fmt12(hour: Int, minute: Int): String {
+    val c = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, hour)
+        set(Calendar.MINUTE, minute)
+        set(Calendar.SECOND, 0)
+    }
+    return SimpleDateFormat("h:mm a", Locale.ENGLISH).format(c.time)
 }
 
 private fun isA11yEnabled(ctx: Context): Boolean {
