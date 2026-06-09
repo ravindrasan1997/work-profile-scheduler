@@ -19,12 +19,9 @@ object AlarmScheduler {
     const val EXTRA_ENABLE = "enable"
     const val EXTRA_DAY = "day"
 
-    private val WEEKDAYS = listOf(
-        Calendar.MONDAY,
-        Calendar.TUESDAY,
-        Calendar.WEDNESDAY,
-        Calendar.THURSDAY,
-        Calendar.FRIDAY
+    private val ALL_DAYS = listOf(
+        Calendar.SUNDAY, Calendar.MONDAY, Calendar.TUESDAY, Calendar.WEDNESDAY,
+        Calendar.THURSDAY, Calendar.FRIDAY, Calendar.SATURDAY
     )
 
     fun scheduleAllAsync(context: Context) {
@@ -35,17 +32,27 @@ object AlarmScheduler {
         }
     }
 
+    /**
+     * Iterate over ALL 7 days: schedule resume+pause slots for selected days, and
+     * cancel both slots for unselected days (so de-selecting a day clears its events).
+     */
     fun scheduleAll(context: Context, schedule: Schedule) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        WEEKDAYS.forEach { day ->
-            scheduleSlot(context, am, day, enable = true, schedule.enableMinutesOfDay())
-            scheduleSlot(context, am, day, enable = false, schedule.disableMinutesOfDay())
+        val selected = schedule.days.toSet()
+        ALL_DAYS.forEach { day ->
+            if (day in selected) {
+                scheduleSlot(context, am, day, enable = true, schedule.enableMinutesOfDay())
+                scheduleSlot(context, am, day, enable = false, schedule.disableMinutesOfDay())
+            } else {
+                am.cancel(pendingIntent(context, day, enable = true))
+                am.cancel(pendingIntent(context, day, enable = false))
+            }
         }
     }
 
     fun cancelAll(context: Context) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        WEEKDAYS.forEach { day ->
+        ALL_DAYS.forEach { day ->
             am.cancel(pendingIntent(context, day, enable = true))
             am.cancel(pendingIntent(context, day, enable = false))
         }
@@ -74,20 +81,28 @@ object AlarmScheduler {
         }
     }
 
+    /**
+     * Next future occurrence of (dayOfWeek, minutesOfDay).
+     *
+     * Locale-independent forward scan: walk today..+7 days, pick the first date whose
+     * weekday matches and whose time is still in the future. This returns *today's*
+     * occurrence when it hasn't passed yet, and only rolls to next week once today's
+     * time is gone — avoiding the firstDayOfWeek-dependent off-by-a-day bug that the
+     * old `set(Calendar.DAY_OF_WEEK, …)` approach had.
+     */
     fun nextOccurrenceMillis(dayOfWeek: Int, minutesOfDay: Int): Long {
-        val now = Calendar.getInstance()
-        val target = Calendar.getInstance().apply {
-            set(Calendar.DAY_OF_WEEK, dayOfWeek)
-            set(Calendar.HOUR_OF_DAY, minutesOfDay / 60)
-            set(Calendar.MINUTE, minutesOfDay % 60)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
+        val nowMs = System.currentTimeMillis()
+        for (offset in 0..7) {
+            val c = Calendar.getInstance()
+            c.add(Calendar.DAY_OF_YEAR, offset)
+            if (c.get(Calendar.DAY_OF_WEEK) != dayOfWeek) continue
+            c.set(Calendar.HOUR_OF_DAY, minutesOfDay / 60)
+            c.set(Calendar.MINUTE, minutesOfDay % 60)
+            c.set(Calendar.SECOND, 0)
+            c.set(Calendar.MILLISECOND, 0)
+            if (c.timeInMillis > nowMs) return c.timeInMillis
         }
-        var attempts = 0
-        while (target.timeInMillis <= now.timeInMillis && attempts < 8) {
-            target.add(Calendar.DAY_OF_YEAR, 7)
-            attempts++
-        }
-        return target.timeInMillis
+        // Unreachable: a given weekday always recurs within 8 days.
+        return nowMs
     }
 }

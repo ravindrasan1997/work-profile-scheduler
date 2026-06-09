@@ -5,7 +5,7 @@
 [![minSdk](https://img.shields.io/badge/minSdk-29-orange.svg)](app/build.gradle.kts)
 [![Build](https://github.com/ravindrasan1997/work-profile-scheduler/actions/workflows/build.yml/badge.svg)](../../actions)
 
-A small, single-screen Android app that automatically **pauses and resumes your work profile** on a weekday schedule — and can do it **completely silently** after a one-time ADB setup. No root, no Shizuku, no continuous background service.
+A small, single-screen Android app that automatically **pauses and resumes your work profile** on a schedule you choose — and can do it **completely silently** after a one-time ADB setup. No root, no Shizuku, no continuous background service.
 
 > Built and tested on a Samsung Galaxy A56 (One UI 8.5, Android 16) with a Microsoft Intune-managed work profile, which is left fully intact.
 
@@ -19,12 +19,12 @@ This app fills that gap: it reproduces the missing scheduler on devices where th
 
 ## Features
 
-- **Weekday schedule** — one *enable* time and one *disable* time, applied Mon–Fri (Sat/Sun skipped). Default: enable 10:00, disable 19:00.
+- **Custom schedule** — pick which days of the week it runs (any combination, default Mon–Fri) and one *Resume at* + one *Pause at* time. Default: resume 10:00, pause 19:00.
 - **Silent operation** — after a one-time `adb` grant, pause/resume happen via a direct system API in ~50 ms with no UI and no screen wake.
-- **Manual toggle** — *Pause now* / *Resume now* buttons.
+- **Manual toggle** — *Resume now* / *Pause now* buttons.
 - **Deferred resume** — a resume that fires while the phone is locked completes automatically on your next unlock, with no extra passcode prompt.
-- **Reboot-safe** — alarms re-armed on `BOOT_COMPLETED`, `TIMEZONE_CHANGED`, and app update.
-- **Battery-friendly** — exact `AlarmManager` alarms only; no foreground service, near-zero idle cost.
+- **Reboot-safe** — schedule re-armed on `BOOT_COMPLETED`, `TIMEZONE_CHANGED`, and app update.
+- **Battery-friendly** — exact `AlarmManager` triggers only; no foreground service, near-zero idle cost.
 - **Material 3 UI** — Jetpack Compose, dynamic color, edge-to-edge.
 
 ## Screenshots
@@ -70,13 +70,14 @@ If you skip step 3, open the app's setup card and enable the **Work Profile Togg
 
 ## Usage
 
-- Tap the **Enable at** / **Disable at** cards to pick times with the Material 3 clock dial, then **Save and re-arm alarms**.
-- The status card shows the current mode (**Silent ✓** / **Visible**), the **next** scheduled action, and a notice if a resume is deferred.
-- Use **Pause now** / **Resume now** for an immediate toggle.
+- Under **Repeat on**, tap the day chips (Mon–Sun) to choose which days the schedule runs. Default is Mon–Fri; deselecting all turns scheduling off (manual buttons still work).
+- Tap the **Resume at** / **Pause at** cards to pick times with the Material 3 clock dial, then **Save schedule**.
+- The status card shows the current mode (**Silent ✓** / **Visible**), when it will next pause/resume, the selected days, and a notice if a resume is deferred.
+- Use **Resume now** / **Pause now** for an immediate toggle.
 
 Verify the schedule from a PC:
 ```bash
-adb shell dumpsys alarm | grep com.worksched   # expect ~10 RTC_WAKEUP entries (5 weekdays x 2)
+adb shell dumpsys alarm | grep com.worksched   # two RTC_WAKEUP triggers per selected day
 ```
 
 ## Build from source
@@ -98,9 +99,9 @@ app/src/main/java/com/worksched/
 ├── MainActivity.kt                   Single-screen entry; edge-to-edge; TEST_FIRE debug hook
 ├── ui/MainScreen.kt                  Status + mode + TimePicker pills + manual buttons
 ├── ui/theme/Theme.kt                 Material 3 dynamic colour
-├── data/Schedule.kt                  enable/disable hour+minute model
+├── data/Schedule.kt                  resume/pause times + selected days model
 ├── data/ScheduleStore.kt             DataStore<Preferences> (schedule + pending-resume state)
-├── alarm/AlarmScheduler.kt           10 exact PendingIntents (5 weekdays x 2 actions)
+├── alarm/AlarmScheduler.kt           exact PendingIntents (2 per selected day); locale-safe next scan
 ├── alarm/ToggleReceiver.kt           Alarm fire → silent API (or visible fallback) + re-arm
 ├── alarm/ToggleActivity.kt           Screen-wake activity (visible fallback path only)
 ├── alarm/ResumeRetryScheduler.kt     Inexact allow-while-idle retry for a deferred resume
