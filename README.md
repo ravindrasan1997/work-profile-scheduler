@@ -4,6 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-Android%2010%2B-3ddc84.svg)](https://www.android.com/)
 [![minSdk](https://img.shields.io/badge/minSdk-29-orange.svg)](app/build.gradle.kts)
 [![Build](https://github.com/ravindrasan1997/work-profile-scheduler/actions/workflows/build.yml/badge.svg)](../../actions)
+[![Release](https://img.shields.io/github/v/release/ravindrasan1997/work-profile-scheduler?color=blue&label=release)](../../releases/latest)
 
 A small, single-screen Android app that automatically **pauses and resumes your work profile** on a schedule you choose — and can do it **completely silently** after a one-time ADB setup. No root, no Shizuku, no continuous background service.
 
@@ -25,13 +26,8 @@ This app fills that gap: it reproduces the missing scheduler on devices where th
 - **Deferred resume** — a resume that fires while the phone is locked completes automatically on your next unlock, with no extra passcode prompt.
 - **Reboot-safe** — schedule re-armed on `BOOT_COMPLETED`, `TIMEZONE_CHANGED`, and app update.
 - **Battery-friendly** — exact `AlarmManager` triggers only; no foreground service, near-zero idle cost.
+- **In-app setup** — a **Setup & permissions** sheet shows live status for silent mode, the accessibility fallback, exact alarms, and battery optimization, with the one-time ADB command ready to copy.
 - **Material 3 UI** — Jetpack Compose, dynamic color, edge-to-edge.
-
-## Screenshots
-
-> _Screenshots to be added in `docs/screenshots/`._
-
-<!-- ![Home](docs/screenshots/home.png) ![Time picker](docs/screenshots/timepicker.png) -->
 
 ## How it works
 
@@ -43,7 +39,7 @@ adb shell pm grant com.worksched android.permission.MODIFY_QUIET_MODE
 
 Once granted (the grant survives reboots; only a reinstall or manual revoke clears it), the app toggles the profile directly and silently. This holds a permission in the personal profile and toggles the work profile across the profile boundary — it **never changes profile ownership**, so MDM enrolment (e.g. Intune) and compliance are unaffected.
 
-**Fallback without the grant:** if the permission isn't granted, the app still works by automating the Quick Settings "Work apps" tile through an `AccessibilityService` (this briefly opens the panel / wakes the screen). Enable it from the in-app setup card. The app upgrades itself to the silent path automatically once the permission is present.
+**Fallback without the grant:** if the permission isn't granted, the app still works by automating the Quick Settings "Work apps" tile through an `AccessibilityService` (this briefly opens the panel / wakes the screen). Enable it from **⋮ → Setup & permissions**. The app upgrades itself to the silent path automatically once the permission is present.
 
 **Deferred resume (locked screen):** a work profile's apps live in credential-encrypted storage whose keys only exist after the device is unlocked, so a *resume* cannot complete silently while locked. Instead of queuing a credential prompt, the app defers the resume and re-issues it on the next unlock (via `USER_PRESENT` plus a battery-light retry alarm), completing silently after your normal unlock. This assumes the work profile shares the device lock (unified lock — the common setup).
 
@@ -64,16 +60,17 @@ Once granted (the grant survives reboots; only a reinstall or manual revoke clea
    ```bash
    adb shell pm grant com.worksched android.permission.MODIFY_QUIET_MODE
    ```
-4. In the app, grant the **exact-alarm** permission when prompted (needed for on-time firing).
+4. Open **⋮ → Setup & permissions** in the app and allow **exact alarms** (needed for on-time firing); the same sheet also offers a battery-optimization exemption for reliable scheduling.
 
-If you skip step 3, open the app's setup card and enable the **Work Profile Toggler** accessibility service instead.
+If you skip step 3, open **⋮ → Setup & permissions** and enable the **Work Profile Toggler** accessibility service instead.
 
 ## Usage
 
+- The hero card shows the current state — **Work apps are on** or **Work apps are paused** — and the next scheduled pause or resume.
+- Use **Resume now** / **Pause now** for an immediate toggle; each button is disabled when the profile is already in that state.
 - Under **Repeat on**, tap the day chips (Mon–Sun) to choose which days the schedule runs. Default is Mon–Fri; deselecting all turns scheduling off (manual buttons still work).
-- Tap the **Resume at** / **Pause at** cards to pick times with the Material 3 clock dial, then **Save schedule**.
-- The status card shows the current mode (**Silent ✓** / **Visible**), when it will next pause/resume, the selected days, and a notice if a resume is deferred.
-- Use **Resume now** / **Pause now** for an immediate toggle.
+- Under **Hours**, tap the **Resume at** / **Pause at** tiles to pick times with the Material 3 clock dial, then **Save schedule**.
+- Open **⋮ → Setup & permissions** for live status of silent mode, the accessibility fallback, exact alarms, and battery optimization — each with its action and a **Re-check**. An inline banner appears on the main screen only when something needs attention. **How it works** and **About** are in the same **⋮** menu.
 
 Verify the schedule from a PC:
 ```bash
@@ -87,6 +84,14 @@ adb shell dumpsys alarm | grep com.worksched   # two RTC_WAKEUP triggers per sel
 # APK at app/build/outputs/apk/debug/app-debug.apk
 ```
 
+The APK published on Releases is the minified release build:
+
+```bash
+./gradlew :app:assembleRelease
+# minified + resource-shrunk, debug-signed APK (~2.2 MB) at
+# app/build/outputs/apk/release/app-release.apk
+```
+
 Requirements: JDK 17, Android SDK with `platforms;android-35` and `build-tools;36.0.0`. Set `ANDROID_HOME`/`ANDROID_SDK_ROOT` or create a `local.properties` with `sdk.dir=...`.
 
 A convenience script `build.sh` generates the Gradle wrapper (gradle 8.10.2) and builds; it passes `--no-validate-url` to the wrapper task because some networks/CDNs fail Gradle's distribution-URL probe even when the download works.
@@ -97,7 +102,7 @@ A convenience script `build.sh` generates the Gradle wrapper (gradle 8.10.2) and
 app/src/main/java/com/worksched/
 ├── WorkSchedApp.kt                   Application: notification channel + re-arm on cold start
 ├── MainActivity.kt                   Single-screen entry; edge-to-edge; TEST_FIRE debug hook
-├── ui/MainScreen.kt                  Status + mode + TimePicker pills + manual buttons
+├── ui/MainScreen.kt                  Header + ⋮ menu, hero card, manual toggles, schedule, setup sheet + dialogs
 ├── ui/theme/Theme.kt                 Material 3 dynamic colour
 ├── data/Schedule.kt                  resume/pause times + selected days model
 ├── data/ScheduleStore.kt             DataStore<Preferences> (schedule + pending-resume state)
@@ -118,7 +123,7 @@ app/src/main/java/com/worksched/
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Status stays "Mode: Visible" after the grant | App cached old state, or grant hit the wrong user | Tap **Re-check**; confirm `dumpsys package com.worksched \| grep MODIFY_QUIET_MODE` shows `granted=true` for user 0 |
+| **Setup & permissions** still shows silent mode as not set up after the grant | App cached old state, or grant hit the wrong user | Tap **Re-check**; confirm `dumpsys package com.worksched \| grep MODIFY_QUIET_MODE` shows `granted=true` for user 0 |
 | `SecurityException` on toggle | Permission not actually granted | Re-run the `pm grant`; install the APK first (grant fails if the package is absent) |
 | Resume shows a passcode prompt | Work profile uses a *separate* work lock (not unified) | Inherent to that setup; pause stays silent. With a unified lock, resume defers and completes silently on unlock |
 | Grant gone after reinstall/OS update | Development-flag grants clear on package reinstall | Re-run the one `pm grant` line |
@@ -135,10 +140,8 @@ A live verification log is in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
 ## Roadmap
 
-- Screenshots and a short demo GIF.
-- CI-driven release automation (auto-build + attach APK on tag).
+- Automatic APK attach to GitHub Releases on tag.
 - Optional richer scheduling (per-day times, weekend inclusion).
-- In-app helper that detects the ungranted state and surfaces the ADB command (e.g. as copyable text / QR).
 - F-Droid metadata for libre distribution.
 - Optional release signing via CI secrets.
 
