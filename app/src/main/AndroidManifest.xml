@@ -8,6 +8,17 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
+    <!-- Optional location gate on the scheduled resume (feature is off by default).
+         Background access is required because the gate runs from a background alarm /
+         proximity broadcast while the app is closed. Used only when the user enables it. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+
+    <!-- On-demand reverse-geocode of the chosen resume location into a readable address,
+         via the system Geocoder (only used when the location feature is set up). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <!-- Silent backend: granted once via
          `adb shell pm grant com.worksched android.permission.MODIFY_QUIET_MODE`.
          protectionLevel is signature|privileged|development|role, so the
@@ -75,6 +86,14 @@
             <intent-filter>
                 <action android:name="android.intent.action.USER_PRESENT" />
                 <action android:name="com.worksched.action.RESUME_RETRY" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".location.GeofenceReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.worksched.action.GEOFENCE" />
             </intent-filter>
         </receiver>
 

@@ -9,6 +9,8 @@ import androidx.core.app.NotificationCompat
 import com.worksched.R
 import com.worksched.WorkSchedApp
 import com.worksched.data.ScheduleStore
+import com.worksched.location.GeofenceManager
+import com.worksched.location.LocationGate
 import com.worksched.profile.WorkProfileToggler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,16 +23,12 @@ class ToggleReceiver : BroadcastReceiver() {
         if (intent.action != AlarmScheduler.ACTION_TOGGLE) return
         val enable = intent.getBooleanExtra(AlarmScheduler.EXTRA_ENABLE, true)
         val appCtx = context.applicationContext
-
         val silent = WorkProfileToggler.isSilent(context)
-        // For the silent path, fire the fast synchronous toggle here and capture
-        // its result (false on resume = deferred because the device is locked).
-        val result: Boolean? = if (silent) {
-            Log.i(TAG, "alarm fired (enable=$enable); silent toggle")
-            WorkProfileToggler.toggle(context, enable)
-        } else {
-            // Fallback: launch the screen-wake activity so the accessibility gesture
-            // has a rendered Quick Settings panel to act on.
+
+        if (!silent) {
+            // Visible fallback path — unchanged, NOT location-gated (gating needs the silent
+            // backend). Launch the screen-wake activity so the accessibility gesture has a
+            // rendered Quick Settings panel to act on, then re-arm next week's alarms.
             Log.i(TAG, "alarm fired (enable=$enable); launching wake activity (visible fallback)")
             val launch = Intent(context, ToggleActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -44,35 +42,64 @@ class ToggleReceiver : BroadcastReceiver() {
                 Log.w(TAG, "failed to start wake activity: $t — direct toggle")
                 WorkProfileToggler.toggle(context, enable)
             }
-            null // fallback path: no deferral handling
+            val pending = goAsync()
+            CoroutineScope(Dispatchers.Default).launch {
+                try {
+                    postNotification(appCtx, enable, deferred = false)
+                    val schedule = ScheduleStore(appCtx).scheduleFlow.first()
+                    AlarmScheduler.scheduleAll(appCtx, schedule)
+                } finally {
+                    pending.finish()
+                }
+            }
+            return
         }
 
+        // Silent path — everything runs in the coroutine so a resume can await a location read.
         val pending = goAsync()
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val store = ScheduleStore(appCtx)
+                val schedule = store.scheduleFlow.first()
 
-                // Deferred-resume bookkeeping (silent path only).
-                if (silent) {
-                    if (enable && result == false) {
-                        // Resume deferred — device locked. Defer silently and retry on unlock.
-                        val deadline = System.currentTimeMillis() + DEFER_WINDOW_MS
-                        store.setPendingResume(true, deadline)
-                        ResumeRetryScheduler.schedule(appCtx, attempt = 0)
-                        Log.i(TAG, "resume deferred; pendingResume set, retry chain started")
-                        postNotification(appCtx, enable = true, deferred = true)
+                if (enable) {
+                    if (schedule.hasValidLocation()) {
+                        // LOCATION GATE (resume only). Resume now if on-site; otherwise arm an
+                        // event-driven geofence that resumes on arrival within the on-window.
+                        val loc = LocationGate.currentLocation(appCtx)
+                        val inside = loc != null && LocationGate.isInside(schedule, loc)
+                        if (inside) {
+                            Log.i(TAG, "resume: inside radius — resuming now")
+                            resumeNow(store, appCtx)
+                        } else {
+                            Log.i(TAG, "resume: off-site (loc=${loc != null}) — arming arrival geofence")
+                            store.setPendingResume(false, 0L) // not a locked-defer
+                            ResumeRetryScheduler.cancel(appCtx)
+                            val armed = GeofenceManager.arm(
+                                appCtx, schedule.latitude!!, schedule.longitude!!,
+                                schedule.radiusMeters, LocationGate.resumeWindowEndMillis(schedule)
+                            )
+                            store.setGeofenceArmed(armed)
+                            postNotification(appCtx, enable = true, deferred = false, locationPending = armed)
+                        }
                     } else {
-                        // Resume succeeded now, OR a pause (which supersedes any pending resume).
-                        store.setPendingResume(false, 0L)
-                        ResumeRetryScheduler.cancel(appCtx)
-                        postNotification(appCtx, enable, deferred = false)
+                        // No location gating — existing behaviour (incl. locked → deferred resume).
+                        Log.i(TAG, "resume: no location gate — toggling")
+                        resumeNow(store, appCtx)
                     }
                 } else {
-                    postNotification(appCtx, enable, deferred = false)
+                    // PAUSE — always pause; supersede any pending resume and disarm any geofence.
+                    WorkProfileToggler.toggle(appCtx, enable = false)
+                    store.setPendingResume(false, 0L)
+                    ResumeRetryScheduler.cancel(appCtx)
+                    if (store.geofenceArmed()) {
+                        GeofenceManager.disarm(appCtx)
+                        store.setGeofenceArmed(false)
+                    }
+                    postNotification(appCtx, enable = false, deferred = false)
                 }
 
-                // Re-arm next week's slot for this (day, action).
-                val schedule = store.scheduleFlow.first()
+                // Re-arm next week's slots (unchanged).
                 AlarmScheduler.scheduleAll(appCtx, schedule)
             } finally {
                 pending.finish()
@@ -80,9 +107,26 @@ class ToggleReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun postNotification(context: Context, enable: Boolean, deferred: Boolean) {
+    /** Resume via the silent backend; defer to next unlock if the device is locked (returns false). */
+    private suspend fun resumeNow(store: ScheduleStore, appCtx: Context) {
+        val ok = WorkProfileToggler.toggle(appCtx, enable = true)
+        if (ok) {
+            store.setPendingResume(false, 0L)
+            ResumeRetryScheduler.cancel(appCtx)
+            postNotification(appCtx, enable = true, deferred = false)
+        } else {
+            val deadline = System.currentTimeMillis() + DEFER_WINDOW_MS
+            store.setPendingResume(true, deadline)
+            ResumeRetryScheduler.schedule(appCtx, attempt = 0)
+            Log.i(TAG, "resume deferred; pendingResume set, retry chain started")
+            postNotification(appCtx, enable = true, deferred = true)
+        }
+    }
+
+    private fun postNotification(context: Context, enable: Boolean, deferred: Boolean, locationPending: Boolean = false) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val text = when {
+            locationPending -> "Work apps will turn on when you reach your location."
             deferred -> "Work profile will resume when you next unlock the phone."
             enable -> "Resuming work profile"
             else -> "Pausing work profile"
@@ -92,7 +136,7 @@ class ToggleReceiver : BroadcastReceiver() {
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setAutoCancel(true)
-        if (deferred) builder.setStyle(NotificationCompat.BigTextStyle().bigText(text))
+        if (deferred || locationPending) builder.setStyle(NotificationCompat.BigTextStyle().bigText(text))
         nm.notify(if (enable) 1001 else 1002, builder.build())
     }
 

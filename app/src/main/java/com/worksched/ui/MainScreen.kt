@@ -85,6 +85,18 @@ import com.worksched.profile.QuietModeBackend
 import com.worksched.profile.WorkProfileDetector
 import com.worksched.profile.WorkProfileToggler
 import com.worksched.service.WorkProfileA11yService
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.core.content.ContextCompat
+import com.worksched.location.LocationGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -118,6 +130,15 @@ fun MainScreen() {
     var showAbout by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
     var showSetup by remember { mutableStateOf(false) }
+    var showLocationPicker by remember { mutableStateOf(false) }
+    var capturing by remember { mutableStateOf(false) }
+    var captureMsg by remember { mutableStateOf<String?>(null) }
+    var locationFgOk by remember { mutableStateOf(LocationGate.hasForegroundLocation(ctx)) }
+    var locationBgOk by remember { mutableStateOf(LocationGate.hasBackgroundLocation(ctx)) }
+    val locationPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        locationFgOk = LocationGate.hasForegroundLocation(ctx)
+        locationBgOk = LocationGate.hasBackgroundLocation(ctx)
+    }
 
     fun refresh() {
         present = detector.isWorkProfilePresent()
@@ -126,6 +147,8 @@ fun MainScreen() {
         a11yOn = isA11yEnabled(ctx)
         canExact = canScheduleExact(ctx)
         batteryOk = isBatteryUnrestricted(ctx)
+        locationFgOk = LocationGate.hasForegroundLocation(ctx)
+        locationBgOk = LocationGate.hasBackgroundLocation(ctx)
         nowTick = System.currentTimeMillis()
     }
 
@@ -165,7 +188,62 @@ fun MainScreen() {
         }
     }
 
-    val needsSetup = !silent || !canExact || !batteryOk
+    val fgLocationPerms = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+    fun requestBackgroundLocation() {
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+            locationPermLauncher.launch(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
+        } else {
+            ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(Uri.parse("package:${ctx.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+    fun openLocationSettings() {
+        ctx.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+    fun captureCurrentLocation() {
+        if (!locationFgOk) { locationPermLauncher.launch(fgLocationPerms); return }
+        if (!LocationGate.locationServicesOn(ctx)) {
+            // Permission granted but device Location is off — open the system Location screen
+            // so the user can switch it on (GMS-free; no Play Services one-tap dialog).
+            captureMsg = "Device Location is off — turn it on, then tap again."
+            openLocationSettings()
+            return
+        }
+        if (capturing) return
+        capturing = true; captureMsg = "Getting your location…"
+        scope.launch {
+            val loc = withContext(Dispatchers.Default) { LocationGate.currentLocation(ctx) }
+            if (loc != null) {
+                schedule = schedule.copy(latitude = loc.latitude, longitude = loc.longitude, locationLabel = null)
+                captureMsg = "Locating address…"
+                val label = withContext(Dispatchers.IO) { LocationGate.describe(ctx, loc.latitude, loc.longitude) }
+                schedule = schedule.copy(locationLabel = label)
+                // The SELECTED PLACE card already shows the address/coordinates — clear the status
+                // line so the location isn't shown twice.
+                captureMsg = null
+            } else {
+                captureMsg = "Couldn't get a fix — move to open sky, or enter coordinates below."
+            }
+            capturing = false
+        }
+    }
+
+    // Resolve a readable address for the current coords (used when closing the picker after manual
+    // entry); runs in the background and updates the label when it lands.
+    fun resolveLabelAndClose() {
+        showLocationPicker = false
+        val lat = schedule.latitude
+        val lng = schedule.longitude
+        if (lat != null && lng != null && schedule.locationLabel == null) {
+            scope.launch {
+                val label = withContext(Dispatchers.IO) { LocationGate.describe(ctx, lat, lng) }
+                schedule = schedule.copy(locationLabel = label)
+            }
+        }
+    }
+
+    val locationNeedsSetup = schedule.locationEnabled && (!locationFgOk || !locationBgOk)
+    val needsSetup = !silent || !canExact || !batteryOk || locationNeedsSetup
 
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { inner ->
         Column(
@@ -215,6 +293,9 @@ fun MainScreen() {
                 },
                 onEnableTime = { h, m -> schedule = schedule.copy(enableHour = h, enableMinute = m) },
                 onDisableTime = { h, m -> schedule = schedule.copy(disableHour = h, disableMinute = m) },
+                onToggleLocation = { on -> schedule = schedule.copy(locationEnabled = on) },
+                onSetLocation = { captureMsg = null; showLocationPicker = true },
+                locationReady = locationFgOk && locationBgOk,
                 onSave = {
                     scope.launch {
                         val ordered = Schedule.ORDER.filter { it in schedule.days }
@@ -229,7 +310,7 @@ fun MainScreen() {
             // Inline action banner — only when something needs setting up
             if (needsSetup) {
                 SetupBanner(
-                    silent = silent, canExact = canExact, batteryOk = batteryOk,
+                    silent = silent, canExact = canExact, batteryOk = batteryOk, locationNeeded = locationNeedsSetup,
                     onClick = { showSetup = true }
                 )
             }
@@ -249,6 +330,12 @@ fun MainScreen() {
                             .setData(Uri.parse("package:${ctx.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 },
                 onAllowBattery = { requestIgnoreBattery(ctx) },
+                locationEnabled = schedule.locationEnabled,
+                locationFgOk = locationFgOk, locationBgOk = locationBgOk,
+                locationServicesOn = LocationGate.locationServicesOn(ctx),
+                onRequestLocation = { locationPermLauncher.launch(fgLocationPerms) },
+                onAllowBackground = { requestBackgroundLocation() },
+                onOpenLocationServices = { ctx.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) },
                 onRecheck = {
                     refresh()
                     scope.launch {
@@ -256,6 +343,24 @@ fun MainScreen() {
                         snackbar.showSnackbar(if (QuietModeBackend.isAvailable(ctx)) "Silent mode active" else "Grant not found — using the visible fallback")
                     }
                 }
+            )
+        }
+    }
+    if (showLocationPicker) {
+        val pickerState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(onDismissRequest = { showLocationPicker = false }, sheetState = pickerState) {
+            LocationPickerSheet(
+                latitude = schedule.latitude, longitude = schedule.longitude,
+                radiusMeters = schedule.radiusMeters, locationLabel = schedule.locationLabel,
+                permissionOk = locationFgOk, locationServicesOn = LocationGate.locationServicesOn(ctx),
+                capturing = capturing, captureMsg = captureMsg,
+                onRequestPermission = { locationPermLauncher.launch(fgLocationPerms) },
+                onUseCurrent = { captureCurrentLocation() },
+                onOpenLocationServices = { openLocationSettings() },
+                onManual = { lat, lng -> schedule = schedule.copy(latitude = lat, longitude = lng, locationLabel = null) },
+                onRadius = { r -> schedule = schedule.copy(radiusMeters = r) },
+                onClear = { schedule = schedule.copy(latitude = null, longitude = null, locationLabel = null); captureMsg = null },
+                onDone = { resolveLabelAndClose() }
             )
         }
     }
@@ -332,7 +437,9 @@ private fun HeroCard(present: Boolean, quiet: Boolean?, pendingResume: Boolean, 
 @Composable
 private fun ScheduleCard(
     schedule: Schedule, savedFlash: Boolean,
-    onToggleDay: (Int) -> Unit, onEnableTime: (Int, Int) -> Unit, onDisableTime: (Int, Int) -> Unit, onSave: () -> Unit
+    onToggleDay: (Int) -> Unit, onEnableTime: (Int, Int) -> Unit, onDisableTime: (Int, Int) -> Unit,
+    onToggleLocation: (Boolean) -> Unit, onSetLocation: () -> Unit, locationReady: Boolean,
+    onSave: () -> Unit
 ) {
     val sc = MaterialTheme.colorScheme
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = sc.surfaceContainerLow)) {
@@ -363,6 +470,8 @@ private fun ScheduleCard(
                 HourTile(sun = true, label = "RESUME AT", hour = schedule.enableHour, minute = schedule.enableMinute, modifier = Modifier.weight(1f), onChange = onEnableTime)
                 HourTile(sun = false, label = "PAUSE AT", hour = schedule.disableHour, minute = schedule.disableMinute, modifier = Modifier.weight(1f), onChange = onDisableTime)
             }
+            Spacer(Modifier.height(18.dp))
+            LocationSection(schedule = schedule, locationReady = locationReady, onToggle = onToggleLocation, onSet = onSetLocation)
             Spacer(Modifier.height(16.dp))
             Button(
                 modifier = Modifier.fillMaxWidth().height(50.dp), onClick = onSave,
@@ -399,15 +508,154 @@ private fun HourTile(sun: Boolean, label: String, hour: Int, minute: Int, modifi
     }
 }
 
+// ---------------- Location ----------------
+
+@Composable
+private fun LocationSection(schedule: Schedule, locationReady: Boolean, onToggle: (Boolean) -> Unit, onSet: () -> Unit) {
+    val sc = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        LocationGlyph(sc.onSurfaceVariant, Modifier.size(16.dp))
+        Spacer(Modifier.size(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("RESUME AT A PLACE", style = MaterialTheme.typography.labelMedium, color = sc.onSurfaceVariant, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+            Text("Turn on work apps only when you arrive", style = MaterialTheme.typography.bodySmall, color = sc.onSurfaceVariant)
+        }
+        Switch(checked = schedule.locationEnabled, onCheckedChange = onToggle)
+    }
+    if (schedule.locationEnabled) {
+        Spacer(Modifier.height(10.dp))
+        Surface(color = sc.surfaceContainerHighest, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onSet() }) {
+            Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    if (schedule.hasValidLocation()) {
+                        Text("Within ${schedule.radiusMeters} m of", style = MaterialTheme.typography.labelSmall, color = sc.onSurfaceVariant)
+                        Text(
+                            schedule.locationLabel ?: "%.5f, %.5f".format(schedule.latitude ?: 0.0, schedule.longitude ?: 0.0),
+                            style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold
+                        )
+                    } else {
+                        Text("Set location", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Text("Pick a place for this to take effect", style = MaterialTheme.typography.bodySmall, color = sc.error)
+                    }
+                }
+                Icon(Icons.Filled.KeyboardArrowRight, null, tint = sc.onSurfaceVariant)
+            }
+        }
+        if (schedule.hasValidLocation() && !locationReady) {
+            Spacer(Modifier.height(6.dp))
+            Text("Grant location access in ⋮ → Setup & permissions so this works in the background.",
+                style = MaterialTheme.typography.bodySmall, color = sc.error)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LocationPickerSheet(
+    latitude: Double?, longitude: Double?, radiusMeters: Int, locationLabel: String?,
+    permissionOk: Boolean, locationServicesOn: Boolean, capturing: Boolean, captureMsg: String?,
+    onRequestPermission: () -> Unit, onUseCurrent: () -> Unit, onOpenLocationServices: () -> Unit,
+    onManual: (Double, Double) -> Unit, onRadius: (Int) -> Unit, onClear: () -> Unit, onDone: () -> Unit
+) {
+    val sc = MaterialTheme.colorScheme
+    var latText by remember { mutableStateOf(latitude?.let { "%.6f".format(it) } ?: "") }
+    var lngText by remember { mutableStateOf(longitude?.let { "%.6f".format(it) } ?: "") }
+    // Reflect a captured / changed location back into the text fields so it's always visible.
+    LaunchedEffect(latitude, longitude) {
+        if (latitude != null) latText = "%.6f".format(latitude)
+        if (longitude != null) lngText = "%.6f".format(longitude)
+    }
+    val hasSel = latitude != null && longitude != null
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp).verticalScroll(rememberScrollState())) {
+        Text("Resume location", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text("Work apps turn on when you reach this place during your schedule.", style = MaterialTheme.typography.bodySmall, color = sc.onSurfaceVariant)
+
+        Spacer(Modifier.height(14.dp))
+        Surface(color = sc.surfaceContainerHighest, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text(if (hasSel) "SELECTED PLACE" else "NO PLACE SELECTED YET",
+                    style = MaterialTheme.typography.labelSmall, color = sc.onSurfaceVariant, letterSpacing = 1.sp)
+                if (hasSel) {
+                    Spacer(Modifier.height(2.dp))
+                    if (locationLabel != null) {
+                        Text(locationLabel, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("%.5f, %.5f".format(latitude ?: 0.0, longitude ?: 0.0),
+                            style = MaterialTheme.typography.labelSmall, color = sc.onSurfaceVariant)
+                    } else {
+                        Text("%.5f, %.5f".format(latitude ?: 0.0, longitude ?: 0.0),
+                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    Text("Within $radiusMeters m", style = MaterialTheme.typography.bodySmall, color = sc.onSurfaceVariant)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Button(
+            onClick = { if (permissionOk) onUseCurrent() else onRequestPermission() },
+            enabled = !capturing, modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+            LocationGlyph(sc.onPrimary, Modifier.size(16.dp)); Spacer(Modifier.size(8.dp))
+            Text(if (capturing) "Getting location…" else if (permissionOk) "Use my current location" else "Grant location & use current")
+        }
+        captureMsg?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = sc.onSurfaceVariant)
+        }
+        if (permissionOk && !locationServicesOn) {
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = onOpenLocationServices) { Text("Turn on device Location") }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text("OR ENTER COORDINATES", style = MaterialTheme.typography.labelMedium, color = sc.onSurfaceVariant, letterSpacing = 1.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(
+                value = latText, onValueChange = { latText = it; pushManual(latText, lngText, onManual) },
+                label = { Text("Latitude") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = lngText, onValueChange = { lngText = it; pushManual(latText, lngText, onManual) },
+                label = { Text("Longitude") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f)
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text("RADIUS · $radiusMeters m", style = MaterialTheme.typography.labelMedium, color = sc.onSurfaceVariant, letterSpacing = 1.sp)
+        Slider(
+            value = radiusMeters.toFloat().coerceIn(50f, 1000f),
+            onValueChange = { onRadius((it / 50f).toInt() * 50) },
+            valueRange = 50f..1000f
+        )
+
+        Spacer(Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = { latText = ""; lngText = ""; onClear() }, modifier = Modifier.weight(1f)) { Text("Clear") }
+            Button(onClick = onDone, modifier = Modifier.weight(1f)) { Text("Done") }
+        }
+    }
+}
+
+private fun pushManual(latText: String, lngText: String, onManual: (Double, Double) -> Unit) {
+    val lat = latText.trim().toDoubleOrNull()
+    val lng = lngText.trim().toDoubleOrNull()
+    if (lat != null && lng != null && lat in -90.0..90.0 && lng in -180.0..180.0) onManual(lat, lng)
+}
+
 // ---------------- Setup banner + sheet ----------------
 
 @Composable
-private fun SetupBanner(silent: Boolean, canExact: Boolean, batteryOk: Boolean, onClick: () -> Unit) {
+private fun SetupBanner(silent: Boolean, canExact: Boolean, batteryOk: Boolean, locationNeeded: Boolean, onClick: () -> Unit) {
     val sc = MaterialTheme.colorScheme
     val msg = when {
         !silent -> "Finish silent-mode setup for instant, screen-free toggles"
         !canExact -> "Allow exact timing so the schedule fires on time"
         !batteryOk -> "Exempt from battery optimization for reliable scheduling"
+        locationNeeded -> "Grant location access for the resume-at-a-place feature"
         else -> ""
     }
     Card(modifier = Modifier.fillMaxWidth().clickable { onClick() }, colors = CardDefaults.cardColors(containerColor = sc.tertiaryContainer)) {
@@ -423,7 +671,10 @@ private fun SetupBanner(silent: Boolean, canExact: Boolean, batteryOk: Boolean, 
 @Composable
 private fun SetupSheet(
     silent: Boolean, a11yOn: Boolean, canExact: Boolean, batteryOk: Boolean,
-    onOpenA11y: () -> Unit, onOpenExact: () -> Unit, onAllowBattery: () -> Unit, onRecheck: () -> Unit
+    onOpenA11y: () -> Unit, onOpenExact: () -> Unit, onAllowBattery: () -> Unit,
+    locationEnabled: Boolean, locationFgOk: Boolean, locationBgOk: Boolean, locationServicesOn: Boolean,
+    onRequestLocation: () -> Unit, onAllowBackground: () -> Unit, onOpenLocationServices: () -> Unit,
+    onRecheck: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
         Text("Setup & permissions", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -472,6 +723,24 @@ private fun SetupSheet(
             if (!batteryOk) { Spacer(Modifier.height(8.dp)); OutlinedButton(onClick = onAllowBattery) { Text("Allow") } }
         }
 
+        SetupItem(
+            title = "Location access", ok = locationFgOk && locationBgOk,
+            okText = "Granted — arrival resume works in the background.",
+            notText = "Only needed for the optional ‘resume at a place’ gate."
+        ) {
+            Spacer(Modifier.height(8.dp))
+            when {
+                !locationFgOk -> OutlinedButton(onClick = onRequestLocation) { Text("Grant location") }
+                !locationBgOk -> OutlinedButton(onClick = onAllowBackground) { Text("Allow all the time") }
+                !locationServicesOn -> OutlinedButton(onClick = onOpenLocationServices) { Text("Turn on Location") }
+            }
+            if (locationEnabled && locationFgOk && locationBgOk && !locationServicesOn) {
+                Spacer(Modifier.height(6.dp))
+                Text("Device Location is off — turn it on for arrival resume.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+        }
+
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onRecheck) { Text("Re-check") }
     }
@@ -504,7 +773,8 @@ private fun HelpDialog(onDismiss: () -> Unit) {
                 HelpPara("Silent mode", "After a one-time ADB grant (MODIFY_QUIET_MODE), the app pauses/resumes your work profile via a direct system call — instant, no screen, no Quick Settings panel. No root.")
                 HelpPara("Visible fallback", "Without the grant, it taps the Quick Settings ‘Work apps’ tile via an Accessibility service, which briefly shows the panel.")
                 HelpPara("Resume while locked", "Resuming needs the profile unlocked, so if a resume is scheduled while the phone is locked it defers and completes silently the moment you next unlock — no extra passcode.")
-            }
+                HelpPara("Resume at a place", "Optional: turn on work apps only when you reach a chosen place. The system watches for your arrival (an event-driven geofence — not constant tracking), so it's light on battery. The spot is shown as an address looked up via the device's geocoder (uses the network). Needs ‘Allow all the time’ location and the silent backend; the scheduled pause is never affected.")
+}
         }
     )
 }
@@ -528,7 +798,7 @@ private fun AboutDialog(onDismiss: () -> Unit) {
             Column {
                 Text("Version ${com.worksched.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(8.dp))
-                Text("Pauses and resumes your Android work profile on a schedule. No root. Open source on GitHub, Apache-2.0.",
+                Text("Pauses and resumes your Android work profile on a schedule — optionally only when you reach a chosen place. No root. Open source on GitHub, Apache-2.0.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -657,5 +927,23 @@ private fun PauseGlyph(tint: Color, modifier: Modifier = Modifier) {
         val r = CornerRadius(barW * 0.4f, barW * 0.4f)
         drawRoundRect(tint, topLeft = Offset(left, top), size = Size(barW, barH), cornerRadius = r)
         drawRoundRect(tint, topLeft = Offset(left + barW + gap, top), size = Size(barW, barH), cornerRadius = r)
+    }
+}
+
+@Composable
+private fun LocationGlyph(tint: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val cx = size.width / 2f
+        val cy = size.height * 0.40f
+        val rOuter = size.minDimension * 0.30f
+        val sw = size.minDimension * 0.10f
+        drawCircle(tint, radius = rOuter, center = Offset(cx, cy), style = Stroke(width = sw))
+        val path = Path().apply {
+            moveTo(cx - rOuter * 0.72f, cy + rOuter * 0.62f)
+            lineTo(cx, size.height * 0.92f)
+            lineTo(cx + rOuter * 0.72f, cy + rOuter * 0.62f)
+        }
+        drawPath(path, tint, style = Stroke(width = sw, cap = StrokeCap.Round))
+        drawCircle(tint, radius = size.minDimension * 0.08f, center = Offset(cx, cy))
     }
 }

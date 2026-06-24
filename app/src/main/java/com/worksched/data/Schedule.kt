@@ -15,10 +15,25 @@ data class Schedule(
     val enableMinute: Int = 0,
     val disableHour: Int = 19,
     val disableMinute: Int = 0,
-    val days: List<Int> = DEFAULT_DAYS
+    val days: List<Int> = DEFAULT_DAYS,
+    // Optional location gate on the *resume* only. Defaults keep it off, so older saved
+    // JSON without these fields decodes to "no location gating" — behaviour unchanged.
+    // lat/lng are nullable (not NaN) so the schedule stays valid JSON.
+    val locationEnabled: Boolean = false,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val radiusMeters: Int = 150,
+    // Human-readable address for the saved location (display only; never gates anything).
+    // Resolved via the system Geocoder; null when offline / unavailable → UI shows coordinates.
+    val locationLabel: String? = null
 ) {
     fun enableMinutesOfDay(): Int = enableHour * 60 + enableMinute
     fun disableMinutesOfDay(): Int = disableHour * 60 + disableMinute
+
+    /** True only when gating is on AND a usable coordinate is stored. Gating applies only then. */
+    fun hasValidLocation(): Boolean =
+        locationEnabled && latitude != null && longitude != null &&
+            latitude.isFinite() && longitude.isFinite()
 
     /** Human-readable day summary, e.g. "Mon–Fri", "Every day", "Mon, Wed, Sat", "No days". */
     fun daysLabel(): String {

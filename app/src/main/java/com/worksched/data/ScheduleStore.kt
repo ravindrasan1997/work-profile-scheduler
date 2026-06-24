@@ -20,6 +20,7 @@ class ScheduleStore(private val context: Context) {
     private val scheduleKey = stringPreferencesKey("schedule_json")
     private val pendingResumeKey = booleanPreferencesKey("pending_resume")
     private val pendingResumeDeadlineKey = longPreferencesKey("pending_resume_deadline")
+    private val geofenceArmedKey = booleanPreferencesKey("geofence_armed")
     private val json = Json { ignoreUnknownKeys = true }
 
     val scheduleFlow: Flow<Schedule> = context.dataStore.data.map { prefs ->
@@ -46,5 +47,14 @@ class ScheduleStore(private val context: Context) {
             it[pendingResumeKey] = active
             it[pendingResumeDeadlineKey] = if (active) deadlineMs else 0L
         }
+    }
+
+    // ---- geofence-armed state (an arrival-resume proximity alert is outstanding) ----
+
+    suspend fun geofenceArmed(): Boolean =
+        context.dataStore.data.first()[geofenceArmedKey] ?: false
+
+    suspend fun setGeofenceArmed(armed: Boolean) {
+        context.dataStore.edit { it[geofenceArmedKey] = armed }
     }
 }
