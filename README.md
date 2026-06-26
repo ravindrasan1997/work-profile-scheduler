@@ -27,6 +27,7 @@ This app fills that gap: it reproduces the missing scheduler on devices where th
 - **Reboot-safe** — schedule re-armed on `BOOT_COMPLETED`, `TIMEZONE_CHANGED`, and app update.
 - **Battery-friendly** — exact `AlarmManager` triggers only; no foreground service, near-zero idle cost.
 - **In-app setup** — a **Setup & permissions** sheet shows live status for silent mode, the accessibility fallback, exact alarms, and battery optimization, with the one-time ADB command ready to copy.
+- **Resume at a place** *(optional)* — turn work apps on only when you reach a chosen location, via a battery-light, event-driven geofence (no constant tracking). The spot is shown as a readable address.
 - **Material 3 UI** — Jetpack Compose, dynamic color, edge-to-edge.
 
 ## How it works
@@ -43,11 +44,14 @@ Once granted (the grant survives reboots; only a reinstall or manual revoke clea
 
 **Deferred resume (locked screen):** a work profile's apps live in credential-encrypted storage whose keys only exist after the device is unlocked, so a *resume* cannot complete silently while locked. Instead of queuing a credential prompt, the app defers the resume and re-issues it on the next unlock (via `USER_PRESENT` plus a battery-light retry alarm), completing silently after your normal unlock. This assumes the work profile shares the device lock (unified lock — the common setup).
 
+**Resume at a place (optional):** when this is enabled, a scheduled resume only turns the profile on if you're at the chosen location. If you're away, the OS watches for your arrival with a platform geofence (`LocationManager.addProximityAlert`) — event-driven and armed only during the work window, so it stays battery-light — and resumes the moment you reach the spot (composing with the deferred resume above if the phone is locked on arrival). The chosen place is reverse-geocoded to a readable address via the device `Geocoder`. This path uses the silent backend and needs location permission (*Allow all the time* for the background check); the scheduled **pause is never gated by location**.
+
 ## Requirements
 
 - Android 10 (API 29) or newer; built against API 35, runs on Android 16.
 - A provisioned **work profile** on the device.
 - A PC with `adb` for the one-time silent-mode grant (optional but recommended).
+- For the optional **Resume at a place** feature: location permission including background (*Allow all the time*), and device Location switched on. Resolving the address uses the network.
 
 ## Install
 
@@ -70,7 +74,8 @@ If you skip step 3, open **⋮ → Setup & permissions** and enable the **Work P
 - Use **Resume now** / **Pause now** for an immediate toggle; each button is disabled when the profile is already in that state.
 - Under **Repeat on**, tap the day chips (Mon–Sun) to choose which days the schedule runs. Default is Mon–Fri; deselecting all turns scheduling off (manual buttons still work).
 - Under **Hours**, tap the **Resume at** / **Pause at** tiles to pick times with the Material 3 clock dial, then **Save schedule**.
-- Open **⋮ → Setup & permissions** for live status of silent mode, the accessibility fallback, exact alarms, and battery optimization — each with its action and a **Re-check**. An inline banner appears on the main screen only when something needs attention. **How it works** and **About** are in the same **⋮** menu.
+- Open **⋮ → Setup & permissions** for live status of silent mode, the accessibility fallback, exact alarms, battery optimization, and location access — each with its action and a **Re-check**. An inline banner appears on the main screen only when something needs attention. **How it works** and **About** are in the same **⋮** menu.
+- *(Optional)* Turn on **Resume at a place** in the schedule card, tap **Set location**, then **Use my current location** (or enter coordinates) and choose a radius. Work apps then turn on only when you reach that spot during your schedule.
 
 Verify the schedule from a PC:
 ```bash
@@ -88,7 +93,7 @@ The APK published on Releases is the minified release build:
 
 ```bash
 ./gradlew :app:assembleRelease
-# minified + resource-shrunk, debug-signed APK (~2.2 MB) at
+# minified + resource-shrunk, debug-signed APK (~2.5 MB) at
 # app/build/outputs/apk/release/app-release.apk
 ```
 
@@ -104,18 +109,21 @@ app/src/main/java/com/worksched/
 ├── MainActivity.kt                   Single-screen entry; edge-to-edge; TEST_FIRE debug hook
 ├── ui/MainScreen.kt                  Header + ⋮ menu, hero card, manual toggles, schedule, setup sheet + dialogs
 ├── ui/theme/Theme.kt                 Material 3 dynamic colour
-├── data/Schedule.kt                  resume/pause times + selected days model
-├── data/ScheduleStore.kt             DataStore<Preferences> (schedule + pending-resume state)
+├── data/Schedule.kt                  resume/pause times + selected days + optional location gate
+├── data/ScheduleStore.kt             DataStore<Preferences> (schedule + pending-resume + geofence-armed)
 ├── alarm/AlarmScheduler.kt           exact PendingIntents (2 per selected day); locale-safe next scan
-├── alarm/ToggleReceiver.kt           Alarm fire → silent API (or visible fallback) + re-arm
+├── alarm/ToggleReceiver.kt           Alarm fire → location gate → silent API (or visible fallback) + re-arm
 ├── alarm/ToggleActivity.kt           Screen-wake activity (visible fallback path only)
 ├── alarm/ResumeRetryScheduler.kt     Inexact allow-while-idle retry for a deferred resume
-├── boot/BootReceiver.kt              Re-arm alarms on boot / time change / app update
+├── boot/BootReceiver.kt              Re-arm alarms + geofence on boot / time change / app update
 ├── profile/WorkProfileDetector.kt    Finds the work profile via UserManager.userProfiles
 ├── profile/ProfileChangeReceiver.kt  Re-arm when a managed profile is added/removed
 ├── profile/QuietModeBackend.kt       Silent backend: requestQuietModeEnabled() + cred-not-required flag
 ├── profile/ResumeReconcileReceiver.kt USER_PRESENT + retry → completes a deferred resume on unlock
 ├── profile/WorkProfileToggler.kt     Dispatcher: silent preferred, accessibility fallback
+├── location/LocationGate.kt          Location permission/geometry, one-shot fix, Geocoder address
+├── location/GeofenceManager.kt       Arm/disarm an OS proximity alert (event-driven geofence)
+├── location/GeofenceReceiver.kt      Geofence ENTER → resume on arrival
 └── service/WorkProfileA11yService.kt  Fallback: Quick Settings "Work apps" tile gesture
 ```
 
@@ -128,6 +136,7 @@ app/src/main/java/com/worksched/
 | Resume shows a passcode prompt | Work profile uses a *separate* work lock (not unified) | Inherent to that setup; pause stays silent. With a unified lock, resume defers and completes silently on unlock |
 | Grant gone after reinstall/OS update | Development-flag grants clear on package reinstall | Re-run the one `pm grant` line |
 | Alarms drift on time | OEM battery optimization | Add the app to *Settings → Battery → Background usage → Allowed* |
+| Work apps don't turn on at my location | Device Location is off, or background location isn't set to "Allow all the time" | Open **⋮ → Setup & permissions → Location access**; enable device Location and grant "Allow all the time" |
 
 A live verification log is in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
@@ -137,6 +146,7 @@ A live verification log is in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 - **Debug-signed** — releases use the Android debug key. A proper release keystore is a future addition.
 - **Silent mode requires the ADB grant**; without it the app falls back to the visible accessibility path.
 - **Deferred resume assumes a unified device/work lock** (the common Intune setup).
+- **Location gating** (optional) needs the silent backend, *Allow all the time* location, and device Location on; the readable address is fetched over the network via the system geocoder.
 
 ## Roadmap
 

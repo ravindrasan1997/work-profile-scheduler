@@ -45,8 +45,27 @@ Without the grant, the app automates the Quick Settings "Work apps" tile through
 accessibility service, and upgrades to the silent path automatically once the permission
 is present.
 
+## Resume at a place (optional location gate)
+
+Only the *resume* is gated (pause and the manual buttons are never gated; off by default, so
+existing schedules behave unchanged):
+ - At the scheduled resume, inside the chosen radius → resume now.
+ - Off-site → no resume; an event-driven proximity alert (`LocationManager.addProximityAlert`) is
+   armed, expiring at that day's pause time so monitoring is bounded — no polling.
+ - On arrival the geofence fires and the profile resumes, composing with the deferred resume above
+   when the phone is locked on arrival.
+ - The scheduled pause clears any pending arrival-resume and disarms the alert.
+
+The chosen spot is reverse-geocoded to a readable address via the system `Geocoder`. No Google Play
+Services, no Maps SDK, no API key.
+
+Confirmed on device: an inside-radius resume turns the profile on immediately; an off-site resume
+arms the proximity alert (auto-expiry at the pause time) and does not turn it on; the scheduled
+pause disarms it; the location shows as its street/area address. The proximity alert is registered
+and removed by the OS; the boundary-crossing ENTER is delivered by the platform on arrival.
+
 ## Build / install
- - APK: WorkProfileScheduler.apk, versionName=1.6.0, ~2.2 MB, minified (R8 + resource
+ - APK: WorkProfileScheduler.apk, versionName=1.7.0, ~2.5 MB, minified (R8 + resource
    shrink), debug-signed.
  - Installs as an in-place update; the `MODIFY_QUIET_MODE` grant persists across updates
    (granted=true, user 0).
@@ -61,3 +80,5 @@ is present.
  - Resume while unlocked: silent, instant.
  - Resume while locked: defers silently and auto-completes on the next normal unlock —
    no second passcode.
+ - Resume at a place (optional): inside → resume now; off-site → arms an arrival geofence that
+   expires at the pause time; pause → disarms it. Off by default.
